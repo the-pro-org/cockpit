@@ -41,11 +41,6 @@ function debug(msg) {
  * Format response to the client
  */
 
-function fatal() {
-    console.error.apply(console.error, arguments);
-    process.exit(1);
-}
-
 function fail(err) {
     process.stdout.write(JSON.stringify({"error": err}) + '\n');
 }
@@ -248,58 +243,60 @@ function setupSSLCertHandling(client) {
  *    fail <JSON formatted error>
  * EOF shuts down the client.
  */
-process.stdin.setEncoding('utf8');
+async function main() {
+    process.stdin.setEncoding('utf8');
 
-if (process.env["TEST_CDP_DEBUG"])
-    enable_debug = true;
+    if (process.env["TEST_CDP_DEBUG"])
+        enable_debug = true;
 
-options = { };
-if (process.argv.length >= 3) {
-    options.port = parseInt(process.argv[2]);
-    if (!options.port) {
-        process.stderr.write("Usage: cdp-driver.js [port]\n");
-        process.exit(1);
+    options = { };
+    if (process.argv.length >= 3) {
+        options.port = parseInt(process.argv[2]);
+        if (!options.port)
+            throw "Usage: cdp-driver.js [port]\n";
     }
+
+    let target = await CDP.New(options);
+    target.port = options.port;
+    let client = await CDP({target: target});
+    setupLogging(client);
+    setupFrameTracking(client);
+    setupSSLCertHandling(client);
+
+    let input_buf = '';
+    process.stdin
+        .on('data', async chunk => {
+            input_buf += chunk;
+            while (true) {
+                let i = input_buf.indexOf('\n');
+                if (i < 0)
+                    break;
+
+                let command = input_buf.slice(0, i);
+
+                // initialize loadEventFired promise for every command except expectLoad() itself (as that
+                // waits for a load event from the *previous* command); but if the previous command already
+                // was an expectLoad(), reinitialize also, as there are sometimes two consecutive expectLoad()s
+                if (!pageLoadPromise || !command.startsWith("expectLoad("))
+                    pageLoadPromise = new Promise((resolve, reject) => { pageLoadResolve = resolve; pageLoadReject = reject; });
+
+                // run the command
+                try {
+                    success(await eval(command));
+                } catch (err) {
+                    fail(err);
+                }
+                input_buf = input_buf.slice(i+1);
+            }
+
+        })
+       .on('end', async () => {
+           await CDP.Close(target);
+           process.exit(0);
+       });
 }
 
-CDP.New(options)
-    .then(target => {
-        target.port = options.port;
-        CDP({target: target})
-            .then(client => {
-                setupLogging(client);
-                setupFrameTracking(client);
-                setupSSLCertHandling(client);
-
-                let input_buf = '';
-                process.stdin
-                    .on('data', chunk => {
-                        input_buf += chunk;
-                        while (true) {
-                            let i = input_buf.indexOf('\n');
-                            if (i < 0)
-                                break;
-                            let command = input_buf.slice(0, i);
-
-                            // initialize loadEventFired promise for every command except expectLoad() itself (as that
-                            // waits for a load event from the *previous* command); but if the previous command already
-                            // was an expectLoad(), reinitialize also, as there are sometimes two consecutive expectLoad()s
-                            if (!pageLoadPromise || !command.startsWith("expectLoad("))
-                                pageLoadPromise = new Promise((resolve, reject) => { pageLoadResolve = resolve; pageLoadReject = reject; });
-
-                            // run the command
-                            eval(command).then(success, fail);
-
-                            input_buf = input_buf.slice(i+1);
-                        }
-
-                    })
-                   .on('end', () => {
-                       CDP.Close(target)
-                           .then(() => process.exit(0))
-                           .catch(fatal);
-                   });
-            })
-            .catch(fatal);
-    })
-    .catch(fatal);
+main().catch(err => {
+    console.error(err);
+    process.exit(1);
+});
