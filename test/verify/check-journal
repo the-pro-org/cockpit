@@ -28,6 +28,10 @@ class TestJournal(MachineCase):
         if self.machine.image in ["rhel-7-5", "rhel-7-5-distropkg", "rhel-7-6", "rhel-7-6-distropkg", "centos-7", "rhel-atomic", "continuous-atomic"]:
             self.python = "python"
             self.crash_fn = "posix_kill"
+        # HACK python3 on fedora-29 doesn't recognize the crash function
+        elif self.machine.image in ["fedora-29"]:
+            self.python = "python3"
+            self.crash_fn = "??"
         else:
             self.python = "python3"
             self.crash_fn = "os_kill"
@@ -330,7 +334,11 @@ s.send(b"PRIORITY=3\\nFOO=bar\\n")'
         wait_field("SYSLOG_IDENTIFIER", "abrt-notification")
 
         b.click("li:contains(Problem info)")
-        wait_field("crash_function", self.crash_fn)
+        # HACK on fedora-29 crash_function is not present
+        if m.image in ["fedora-29"]:
+            wait_field("reason", "killed by SIGSEGV")
+        else:
+            wait_field("crash_function", self.crash_fn)
 
         b.click("li:contains(Problem details)")
         sel = "#journal-entry-fields #accordion-markup .panel .panel-heading"
